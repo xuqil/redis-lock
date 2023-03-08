@@ -2,8 +2,20 @@ package redis_lock
 
 import (
 	"context"
-	"github.com/redis/go-redis/v9"
+	_ "embed"
+	"errors"
 	"time"
+
+	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
+)
+
+var (
+	ErrFailedToPreemptLock = errors.New("redis-lock: failed to lock")
+	ErrLockNotHold         = errors.New("redis-lock: no locks held")
+
+	//go:embed lua/unlock.lua
+	luaUnlock string
 )
 
 // Client implements Redis distributed lock
@@ -25,6 +37,26 @@ func (c *Client) Lock(ctx context.Context,
 	panic("implement me")
 }
 
+// TryLock tries to acquire a lock
+func (c *Client) TryLock(ctx context.Context,
+	key string,
+	expiration time.Duration) (*Lock, error) {
+	val := uuid.New().String()
+	ok, err := c.client.SetNX(ctx, key, val, expiration).Result()
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, ErrFailedToPreemptLock
+	}
+	return &Lock{
+		client:     c.client,
+		key:        key,
+		value:      val,
+		expiration: expiration,
+	}, nil
+}
+
 type Lock struct {
 	client     redis.Cmdable
 	key        string
@@ -34,5 +66,12 @@ type Lock struct {
 }
 
 func (l *Lock) Unlock(ctx context.Context) error {
-	panic("implement me")
+	res, err := l.client.Eval(ctx, luaUnlock, []string{l.key}, l.value).Int64()
+	if err != nil {
+		return err
+	}
+	if res != 1 {
+		return ErrLockNotHold
+	}
+	return nil
 }
