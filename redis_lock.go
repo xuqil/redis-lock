@@ -12,7 +12,7 @@ import (
 
 var (
 	ErrFailedToPreemptLock = errors.New("redis-lock: failed to lock")
-	ErrLockNotHold         = errors.New("redis-lock: no locks held")
+	ErrLockNotHold         = errors.New("redis-lock: lock not hold")
 
 	//go:embed lua/unlock.lua
 	luaUnlock string
@@ -62,7 +62,6 @@ type Lock struct {
 	key        string
 	value      string
 	expiration time.Duration
-	unlockChan chan struct{}
 }
 
 func (l *Lock) Unlock(ctx context.Context) error {
