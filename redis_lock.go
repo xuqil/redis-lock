@@ -16,6 +16,9 @@ var (
 
 	//go:embed lua/unlock.lua
 	luaUnlock string
+
+	//go:embed lua/refresh.lua
+	luaRefresh string
 )
 
 // Client implements Redis distributed lock
@@ -57,13 +60,16 @@ func (c *Client) TryLock(ctx context.Context,
 	}, nil
 }
 
+// Lock is responsible for unlocking and refreshing
 type Lock struct {
 	client     redis.Cmdable
 	key        string
 	value      string
 	expiration time.Duration
+	unlockChan chan struct{}
 }
 
+// Unlock releases the lock
 func (l *Lock) Unlock(ctx context.Context) error {
 	res, err := l.client.Eval(ctx, luaUnlock, []string{l.key}, l.value).Int64()
 	if err != nil {
@@ -73,4 +79,53 @@ func (l *Lock) Unlock(ctx context.Context) error {
 		return ErrLockNotHold
 	}
 	return nil
+}
+
+// Refresh refreshes the lock by expiration
+func (l *Lock) Refresh(ctx context.Context) error {
+	res, err := l.client.Eval(ctx, luaRefresh, []string{l.key}, l.value, l.expiration.Seconds()).Int64()
+	if err != nil {
+		return err
+	}
+	if res != 1 {
+		return ErrLockNotHold
+	}
+	return nil
+}
+
+// AutoRefresh refreshes automatically at interval,
+// timeout specifies the refresh timeout
+func (l *Lock) AutoRefresh(interval time.Duration, timeout time.Duration) error {
+	timeoutChan := make(chan struct{}, 1)
+	ticker := time.NewTicker(interval)
+	for {
+		select {
+		case <-ticker.C:
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			err := l.Refresh(ctx)
+			cancel()
+			// timout retry
+			if errors.Is(err, context.DeadlineExceeded) {
+				timeoutChan <- struct{}{}
+				continue
+			}
+			if err != nil {
+				return err
+			}
+		case <-timeoutChan:
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			err := l.Refresh(ctx)
+			cancel()
+			// timeout retry
+			if errors.Is(err, context.DeadlineExceeded) {
+				timeoutChan <- struct{}{}
+				continue
+			}
+			if err != nil {
+				return err
+			}
+		case <-l.unlockChan:
+			return nil
+		}
+	}
 }

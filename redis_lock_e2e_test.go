@@ -76,6 +76,7 @@ func TestClient_e2e_TryLock(t *testing.T) {
 				return
 			}
 			assert.Equal(t, tc.wantLock.key, lock.key)
+			assert.Equal(t, tc.wantLock.expiration, lock.expiration)
 			assert.NotEmpty(t, lock.value)
 			assert.NotNil(t, lock.client)
 			tc.after(t)
@@ -163,6 +164,100 @@ func TestClient_e2e_Unlock(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
 			defer cancel()
 			err := tc.lock.Unlock(ctx)
+			assert.Equal(t, tc.wantErr, err)
+			if err != nil {
+				return
+			}
+			tc.after(t)
+		})
+	}
+}
+func TestClient_e2e_Refresh(t *testing.T) {
+	rdb := redis.NewClient(&redis.Options{
+		Addr: "localhost:6379",
+	})
+
+	testCases := []struct {
+		name   string
+		before func(t *testing.T)
+		after  func(t *testing.T)
+
+		lock *Lock
+
+		wantErr error
+	}{
+		{
+			name:   "lock not hold",
+			before: func(t *testing.T) {},
+			after:  func(t *testing.T) {},
+			lock: &Lock{
+				key:    "refresh_key1",
+				value:  "123",
+				client: rdb,
+			},
+			wantErr: ErrLockNotHold,
+		},
+		{
+			name: "lock hold by others",
+			before: func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second*3)
+				defer cancel()
+				res, err := rdb.Set(ctx, "refresh_key2", "value2", time.Second*10).Result()
+				require.NoError(t, err)
+				assert.Equal(t, "OK", res)
+			},
+			after: func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second*3)
+				defer cancel()
+				timeout, err := rdb.TTL(context.Background(), "refresh_key2").Result()
+				require.NoError(t, err)
+				assert.Equal(t, true, timeout <= time.Second*10)
+				// clear
+				_, err = rdb.Del(ctx, "refresh_key2").Result()
+				require.NoError(t, err)
+			},
+			lock: &Lock{
+				key:        "refresh_key2",
+				value:      "123",
+				client:     rdb,
+				expiration: time.Minute,
+			},
+			wantErr: ErrLockNotHold,
+		},
+		{
+			name: "unlocked",
+			before: func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second*3)
+				defer cancel()
+				res, err := rdb.Set(ctx, "refresh_key3", "value3", time.Second*10).Result()
+				require.NoError(t, err)
+				assert.Equal(t, "OK", res)
+			},
+			after: func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second*3)
+				defer cancel()
+				timeout, err := rdb.TTL(context.Background(), "refresh_key2").Result()
+				require.NoError(t, err)
+				assert.Equal(t, true, timeout <= time.Second*50)
+				// clear
+				_, err = rdb.Del(ctx, "refresh_key3").Result()
+				require.NoError(t, err)
+			},
+			lock: &Lock{
+				key:        "refresh_key3",
+				value:      "value3",
+				client:     rdb,
+				expiration: time.Minute,
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.before(t)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+			defer cancel()
+			err := tc.lock.Refresh(ctx)
 			assert.Equal(t, tc.wantErr, err)
 			if err != nil {
 				return
