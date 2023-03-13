@@ -1,3 +1,17 @@
+// Copyright 2023 xuqil
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //go:build e2e
 
 package redis_lock
@@ -48,9 +62,9 @@ func TestClient_e2e_Lock(t *testing.T) {
 			key:        "lock_key1",
 			expiration: time.Minute,
 			timeout:    time.Second * 3,
-			retry: &FixedIntervalRetryStrategy{
+			retry: &FixedIntervalRetry{
 				Interval: time.Second,
-				MaxCnt:   10,
+				Max:      10,
 			},
 			wantLock: &Lock{
 				key:        "lock_key1",
@@ -76,9 +90,9 @@ func TestClient_e2e_Lock(t *testing.T) {
 			key:        "lock_key2",
 			expiration: time.Minute,
 			timeout:    time.Second * 3,
-			retry: &FixedIntervalRetryStrategy{
+			retry: &FixedIntervalRetry{
 				Interval: time.Second,
-				MaxCnt:   3,
+				Max:      3,
 			},
 			wantErr: ErrLockTimeout,
 		},
@@ -103,9 +117,9 @@ func TestClient_e2e_Lock(t *testing.T) {
 			key:        "lock_key3",
 			expiration: time.Minute,
 			timeout:    time.Second * 3,
-			retry: &FixedIntervalRetryStrategy{
+			retry: &FixedIntervalRetry{
 				Interval: time.Second,
-				MaxCnt:   10,
+				Max:      10,
 			},
 			wantLock: &Lock{
 				key:        "lock_key3",
@@ -497,4 +511,23 @@ func TestClient_e2e_AutoRefreshChan(t *testing.T) {
 			tc.after(t)
 		})
 	}
+}
+func TestAutoRefresh(t *testing.T) {
+	rdb := redis.NewClient(&redis.Options{
+		Addr: "localhost:6379",
+	})
+	client := NewClient(rdb)
+	l, err := client.TryLock(context.Background(), "auto-refresh-key", time.Second)
+	require.NoError(t, err)
+	go func() {
+		err = l.AutoRefresh(time.Millisecond*800, time.Millisecond*300)
+		require.NoError(t, err)
+	}()
+	time.Sleep(time.Second * 2)
+	res, err := rdb.Exists(context.Background(), "auto-refresh-key").Result()
+	require.NoError(t, err)
+	require.Equal(t, int64(1), res)
+
+	err = l.Unlock(context.Background())
+	require.NoError(t, err)
 }
